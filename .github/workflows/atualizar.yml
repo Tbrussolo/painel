@@ -1,0 +1,42 @@
+name: Atualizar dados
+
+on:
+  schedule:
+    - cron: '*/10 12-22 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: atualizar-dados
+  cancel-in-progress: false
+
+jobs:
+  atualizar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Buscar dados
+        env:
+          BRAPI_TOKEN: ${{ secrets.BRAPI_TOKEN }}
+        run: node scripts/atualizar.mjs
+
+      - name: Publicar na branch dados
+        run: |
+          mkdir -p /tmp/pub
+          cp data.json /tmp/pub/data.json
+          git config user.name "painel-bot"
+          git config user.email "painel-bot@users.noreply.github.com"
+          git checkout --orphan dados
+          git rm -rf --quiet . || true
+          cp /tmp/pub/data.json data.json
+          git add data.json
+          git commit -m "dados $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -f origin dados
