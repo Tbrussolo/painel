@@ -79,6 +79,7 @@ async function listaB3() {
   const itens = (j && j.stocks) || [];
   return itens.filter(
     (x) =>
+      /^[A-Z]{4}(3|4|5|6|11)$/.test(x.stock) &&
       (x.subType === 'stock' || x.subType === 'unit') &&
       x.change !== null &&
       x.change !== undefined &&
@@ -119,19 +120,9 @@ async function yahoo(simbolo, range, intervalo) {
 }
 
 async function yahooCotacao(simbolo) {
-  const d = await yahoo(simbolo, '1mo', '1d');
+  const d = await yahoo(simbolo, '1d', '1d');
   const m = d.meta || {};
-  const ts = d.timestamp || [];
-  const cl = (d.indicators && d.indicators.quote && d.indicators.quote[0] && d.indicators.quote[0].close) || [];
-  const dia = (x) => new Date((x + (m.gmtoffset || 0)) * 1000).toISOString().slice(0, 10);
-  const diaAtual = dia(m.regularMarketTime);
-  let anterior = null;
-  for (let i = ts.length - 1; i >= 0; i--) {
-    if (cl[i] !== null && cl[i] !== undefined && dia(ts[i]) < diaAtual) {
-      anterior = cl[i];
-      break;
-    }
-  }
+  const anterior = num(m.chartPreviousClose) !== null ? num(m.chartPreviousClose) : num(m.previousClose);
   const atual = num(m.regularMarketPrice);
   const variacao = atual !== null && anterior !== null ? atual - anterior : null;
   return {
@@ -139,7 +130,7 @@ async function yahooCotacao(simbolo) {
     max: num(m.regularMarketDayHigh),
     atual,
     var: variacao,
-    varPct: variacao !== null ? (variacao / anterior) * 100 : null,
+    varPct: variacao !== null && anterior ? (variacao / anterior) * 100 : null,
     fonte: m.shortName || m.longName || '',
   };
 }
