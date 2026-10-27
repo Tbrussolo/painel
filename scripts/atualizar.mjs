@@ -7,6 +7,7 @@ if (!TOKEN) {
 }
 const BASE = 'https://brapi.dev';
 const REPO = process.env.GITHUB_REPOSITORY || 'Tbrussolo/painel';
+const UA = 'Mozilla/5.0 (compatible; painel-tv)';
 const avisos = [];
 const agora = new Date();
 const dormir = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -40,38 +41,18 @@ async function seguro(rotulo, fn, padrao) {
   }
 }
 
-async function cotar(simbolos, tam) {
-  const saida = {};
-  for (let i = 0; i < simbolos.length; i += tam) {
-    const parte = simbolos.slice(i, i + tam);
-    const j = await brapi('/api/v2/stocks/quote', { symbols: parte.join(',') });
-    ((j && j.results) || []).forEach((r) => {
-      saida[r.requestedSymbol] = r.data;
-      if (!saida[r.symbol]) saida[r.symbol] = r.data;
-    });
+async function emLotes(itens, tam, fn) {
+  const saida = [];
+  for (let i = 0; i < itens.length; i += tam) {
+    const parte = itens.slice(i, i + tam);
+    const r = await Promise.all(parte.map((x) => fn(x)));
+    saida.push(...r);
+    await dormir(300);
   }
   return saida;
 }
 
-async function cotarComFallback(simbolos) {
-  try {
-    return await cotar(simbolos, 20);
-  } catch (e) {
-    avisos.push('cotacao em lote: ' + e.message);
-    if (/^(401|403|429)/.test(e.message) || simbolos.length > 10) return {};
-    const saida = {};
-    for (const s of simbolos) {
-      try {
-        Object.assign(saida, await cotar([s], 1));
-      } catch (e2) {
-        avisos.push('cotacao ' + s + ': ' + e2.message);
-      }
-    }
-    return saida;
-  }
-}
-
-function linhaB3(nome, d) {
+function linhaBrapi(nome, d) {
   if (!d) return { nome, erro: true };
   return {
     nome,
@@ -83,66 +64,38 @@ function linhaB3(nome, d) {
   };
 }
 
-async function extremos() {
-  const alt = await brapi('/api/v2/stocks/screener', { sortBy: 'changePercent', sortOrder: 'desc', limit: '5' });
-  const bai = await brapi('/api/v2/stocks/screener', { sortBy: 'changePercent', sortOrder: 'asc', limit: '5' });
-  const A = (alt && alt.results) || [];
-  const B = (bai && bai.results) || [];
-  const simbolos = A.concat(B).map((x) => x.symbol);
-  const cot = await seguro('cotacao altas e baixas', () => cotarComFallback(simbolos), {});
-  const monta = (x) => {
-    const d = cot[x.symbol];
-    if (d) return linhaB3(x.symbol, d);
-    return {
-      nome: x.symbol,
-      min: null,
-      max: null,
-      atual: num(x.quote && x.quote.lastPrice),
-      var: null,
-      varPct: num(x.quote && x.quote.changePercent),
-    };
-  };
-  return { altas: A.map(monta), baixas: B.map(monta) };
+function pick(nome, d) {
+  return { nome, min: d.min, max: d.max, atual: d.atual, var: d.var, varPct: d.varPct };
 }
 
-const PARES = [
-  ['Dólar', 'USD-BRL'],
-  ['Euro', 'EUR-BRL'],
-  ['Libra', 'GBP-BRL'],
-  ['Iene', 'JPY-BRL'],
-  ['Yuan', 'CNY-BRL'],
-];
+async function cotarUm(simbolo) {
+  const j = await brapi('/api/v2/stocks/quote', { symbols: simbolo });
+  const r = j && j.results && j.results[0];
+  return r ? r.data : null;
+}
 
-async function moedas() {
-  const saida = [];
-  let bloqueado = false;
-  for (const [nome, par] of PARES) {
-    if (bloqueado) {
-      saida.push({ nome, erro: true });
-      continue;
-    }
-    try {
-      const j = await brapi('/api/v2/currency', { currency: par });
-      const c = j && j.currency && j.currency[0];
-      if (!c) {
-        saida.push({ nome, erro: true });
-        continue;
-      }
-      saida.push({
-        nome,
-        min: num(c.low),
-        max: num(c.high),
-        atual: num(c.bidPrice),
-        var: num(c.bidVariation),
-        varPct: num(c.percentageChange),
-      });
-    } catch (e) {
-      avisos.push('cambio ' + par + ': ' + e.message);
-      if (/^(401|403)/.test(e.message)) bloqueado = true;
-      saida.push({ nome, erro: true });
-    }
-  }
-  return saida;
+async function listaB3() {
+  const j = await brapi('/api/quote/list', {});
+  const itens = (j && j.stocks) || [];
+  return itens.filter(
+    (x) =>
+      (x.subType === 'stock' || x.subType === 'unit') &&
+      x.change !== null &&
+      x.change !== undefined &&
+      x.volume > 0,
+  );
+}
+
+async function composicaoIbov() {
+  const corpo = { language: 'pt-br', pageNumber: 1, pageSize: 120, index: 'IBOV', segment: '1' };
+  const codigo = Buffer.from(JSON.stringify(corpo)).toString('base64');
+  const r = await fetch('https://sistemaswebb3-listados.b3.com.br/indexProxy/indexCall/GetPortfolioDay/' + codigo, {
+    headers: { 'User-Agent': UA },
+  });
+  if (!r.ok) throw new Error('B3 ' + r.status);
+  const j = await r.json();
+  const itens = (j && j.results) || [];
+  return itens.map((x) => String(x.cod || '').trim()).filter(Boolean);
 }
 
 async function yahoo(simbolo, range, intervalo) {
@@ -150,82 +103,45 @@ async function yahoo(simbolo, range, intervalo) {
     'https://query1.finance.yahoo.com/v8/finance/chart/' +
     encodeURIComponent(simbolo) +
     '?range=' + range + '&interval=' + intervalo;
-  const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; painel-tv)' } });
-  if (!r.ok) throw new Error('Yahoo ' + r.status + ' ' + simbolo);
-  const j = await r.json();
-  const res = j && j.chart && j.chart.result && j.chart.result[0];
-  if (!res) throw new Error('Yahoo sem dados ' + simbolo);
-  return res;
+  for (let t = 0; t < 2; t++) {
+    const r = await fetch(url, { headers: { 'User-Agent': UA } });
+    if (r.status === 429 && t === 0) {
+      await dormir(2000);
+      continue;
+    }
+    if (!r.ok) throw new Error('Yahoo ' + r.status + ' ' + simbolo);
+    const j = await r.json();
+    const res = j && j.chart && j.chart.result && j.chart.result[0];
+    if (!res) throw new Error('Yahoo sem dados ' + simbolo);
+    return res;
+  }
+  throw new Error('Yahoo falhou ' + simbolo);
 }
 
-const INTL = [
-  ['S&P 500', '^GSPC'],
-  ['Nasdaq', '^IXIC'],
-  ['Dow Jones', '^DJI'],
-  ['Nikkei', '^N225'],
-  ['Xangai', '000001.SS'],
-  ['Hang Seng', '^HSI'],
-  ['Euro Stoxx 50', '^STOXX50E'],
-  ['DAX', '^GDAXI'],
-];
-
-async function internacionais() {
-  const saida = [];
-  for (const [nome, simbolo] of INTL) {
-    try {
-      const d = await yahoo(simbolo, '1mo', '1d');
-      const m = d.meta || {};
-      const ts = d.timestamp || [];
-      const cl = (d.indicators && d.indicators.quote && d.indicators.quote[0] && d.indicators.quote[0].close) || [];
-      const dia = (x) => new Date((x + (m.gmtoffset || 0)) * 1000).toISOString().slice(0, 10);
-      const diaAtual = dia(m.regularMarketTime);
-      let anterior = null;
-      for (let i = ts.length - 1; i >= 0; i--) {
-        if (cl[i] !== null && cl[i] !== undefined && dia(ts[i]) < diaAtual) {
-          anterior = cl[i];
-          break;
-        }
-      }
-      const atual = num(m.regularMarketPrice);
-      const variacao = atual !== null && anterior !== null ? atual - anterior : null;
-      saida.push({
-        nome,
-        min: num(m.regularMarketDayLow),
-        max: num(m.regularMarketDayHigh),
-        atual,
-        var: variacao,
-        varPct: variacao !== null ? (variacao / anterior) * 100 : null,
-      });
-    } catch (e) {
-      avisos.push(nome + ': ' + e.message);
-      saida.push({ nome, erro: true });
+async function yahooCotacao(simbolo) {
+  const d = await yahoo(simbolo, '1mo', '1d');
+  const m = d.meta || {};
+  const ts = d.timestamp || [];
+  const cl = (d.indicators && d.indicators.quote && d.indicators.quote[0] && d.indicators.quote[0].close) || [];
+  const dia = (x) => new Date((x + (m.gmtoffset || 0)) * 1000).toISOString().slice(0, 10);
+  const diaAtual = dia(m.regularMarketTime);
+  let anterior = null;
+  for (let i = ts.length - 1; i >= 0; i--) {
+    if (cl[i] !== null && cl[i] !== undefined && dia(ts[i]) < diaAtual) {
+      anterior = cl[i];
+      break;
     }
   }
-  return saida;
-}
-
-async function graficoIbov() {
-  const pega = async (range, intervalo) => {
-    const j = await brapi('/api/v2/stocks/historical', { symbols: '^BVSP', range, interval: intervalo, sortOrder: 'asc' });
-    const r = j && j.results && j.results[0];
-    return (r && r.data && r.data.historicalDataPrice) || [];
+  const atual = num(m.regularMarketPrice);
+  const variacao = atual !== null && anterior !== null ? atual - anterior : null;
+  return {
+    min: num(m.regularMarketDayLow),
+    max: num(m.regularMarketDayHigh),
+    atual,
+    var: variacao,
+    varPct: variacao !== null ? (variacao / anterior) * 100 : null,
+    fonte: m.shortName || m.longName || '',
   };
-  let serie = await pega('7d', '1h').catch(() => []);
-  if (!serie.length) serie = (await pega('1mo', '1d')).slice(-7);
-  return serie.filter((p) => p.close !== null && p.close !== undefined).map((p) => [p.date * 1000, p.close]);
-}
-
-async function graficoUsd() {
-  const fmtData = (d) => d.toISOString().slice(0, 10);
-  const j = await brapi('/api/v2/currency/historical', {
-    currency: 'USD-BRL',
-    startDate: fmtData(new Date(Date.now() - 14 * 86400000)),
-    endDate: fmtData(new Date()),
-    sortOrder: 'asc',
-  });
-  const obs = (j && j.results && j.results[0] && j.results[0].observations) || [];
-  obs.sort((a, b) => (a.date < b.date ? -1 : 1));
-  return obs.slice(-7).map((o) => [Date.parse(o.date), o.value]);
 }
 
 async function graficoYahoo(simbolo) {
@@ -239,58 +155,148 @@ async function graficoYahoo(simbolo) {
   return pontos;
 }
 
+async function tabelaYahoo(pares, rotulo) {
+  const saida = [];
+  for (const [nome, simbolo] of pares) {
+    try {
+      saida.push(pick(nome, await yahooCotacao(simbolo)));
+    } catch (e) {
+      avisos.push(rotulo + ' ' + nome + ': ' + e.message);
+      saida.push({ nome, erro: true });
+    }
+  }
+  return saida;
+}
+
+const INTL = [
+  ['S&P 500', '^GSPC'],
+  ['Nasdaq', '^IXIC'],
+  ['Dow Jones', '^DJI'],
+  ['Nikkei', '^N225'],
+  ['Xangai', '000001.SS'],
+  ['Hang Seng', '^HSI'],
+  ['Euro Stoxx 50', '^STOXX50E'],
+  ['DAX', '^GDAXI'],
+];
+
+const MOEDAS = [
+  ['Dólar', 'USDBRL=X'],
+  ['Euro', 'EURBRL=X'],
+  ['Libra', 'GBPBRL=X'],
+  ['Iene', 'JPYBRL=X'],
+  ['Yuan', 'CNYBRL=X'],
+];
+
+const GRAFICOS = [
+  ['ibov', 'Ibovespa', '^BVSP'],
+  ['sp', 'S&P 500', '^GSPC'],
+  ['nasdaq', 'Nasdaq', '^IXIC'],
+  ['usd', 'Dólar (R$)', 'USDBRL=X'],
+];
+
 async function principal() {
   const anterior = await fetch('https://raw.githubusercontent.com/' + REPO + '/dados/data.json')
     .then((r) => (r.ok ? r.json() : null))
     .catch(() => null);
 
-  const idx = await seguro('indices B3', () => cotarComFallback(['^BVSP', 'SMLL', 'SMLL.SA', 'IFIX.SA']), {});
-  const pega = (lista) => {
-    for (const s of lista) {
-      if (idx[s]) return idx[s];
+  const dIbov = await seguro('Ibovespa (brapi)', () => cotarUm('^BVSP'), null);
+  const dIfix = await seguro('IFIX (brapi)', () => cotarUm('IFIX.SA'), null);
+  let small = null;
+  for (const s of ['SMLL.SA', '^SMLL']) {
+    try {
+      const d = await yahooCotacao(s);
+      if (/small|smll/i.test(d.fonte)) {
+        small = d;
+        break;
+      }
+      avisos.push('Small Caps: ' + s + ' retornou "' + d.fonte + '", descartado');
+    } catch (e) {
+      /* tenta o proximo simbolo */
     }
-    return null;
-  };
+  }
+  if (!small) avisos.push('Small Caps: sem cotacao confiavel');
   const indices = [
-    linhaB3('Ibovespa', pega(['^BVSP'])),
-    linhaB3('Small Caps', pega(['SMLL', 'SMLL.SA'])),
-    linhaB3('IFIX', pega(['IFIX.SA'])),
+    linhaBrapi('Ibovespa', dIbov),
+    small ? pick('Small Caps', small) : { nome: 'Small Caps', erro: true },
+    linhaBrapi('IFIX', dIfix),
   ];
-  const ext = await seguro('altas e baixas', extremos, { altas: [], baixas: [] });
-  const tabela2 = await internacionais();
-  const tabela3 = await moedas();
 
-  let tape = [];
-  let lista = [];
-  try {
-    lista = JSON.parse(fs.readFileSync('ibovespa.json', 'utf8')).tickers || [];
-  } catch (e) {
-    avisos.push('ibovespa.json: ' + e.message);
+  const listaTodas = await seguro('lista de acoes da B3 (brapi)', listaB3, []);
+
+  let tickers = await seguro('composicao do Ibovespa (B3)', composicaoIbov, []);
+  if (!tickers.length) {
+    try {
+      tickers = JSON.parse(fs.readFileSync('ibovespa.json', 'utf8')).tickers || [];
+    } catch (e) {
+      tickers = [];
+    }
+    if (tickers.length) avisos.push('Ibovespa: usando ibovespa.json');
   }
-  if (lista.length) {
-    const cot = await seguro('faixa Ibovespa', () => cotar(lista, 20), {});
-    tape = lista
-      .filter((s) => cot[s])
-      .map((s) => ({ s, p: num(cot[s].regularMarketPrice), v: num(cot[s].regularMarketChangePercent) }));
+  if (!tickers.length && listaTodas.length) {
+    tickers = listaTodas
+      .slice()
+      .sort((a, b) => b.volume - a.volume)
+      .slice(0, 80)
+      .map((x) => x.stock);
+    avisos.push('faixa: composicao do Ibovespa indisponivel, usando as 80 acoes mais negociadas');
   }
 
-  let graficos = (anterior && anterior.graficos) || {};
-  if (agora.getUTCMinutes() < 10 || !Object.keys(graficos).length) {
-    const novo = {};
-    const g1 = await seguro('grafico Ibovespa', graficoIbov, null);
-    if (g1 && g1.length > 1) novo.ibov = { nome: 'Ibovespa', pontos: g1 };
-    const g2 = await seguro('grafico S&P 500', () => graficoYahoo('^GSPC'), null);
-    if (g2 && g2.length > 1) novo.sp = { nome: 'S&P 500', pontos: g2 };
-    const g3 = await seguro('grafico Nasdaq', () => graficoYahoo('^IXIC'), null);
-    if (g3 && g3.length > 1) novo.nasdaq = { nome: 'Nasdaq', pontos: g3 };
-    const g4 = await seguro('grafico Dolar', graficoUsd, null);
-    if (g4 && g4.length > 1) novo.usd = { nome: 'Dólar (R$)', pontos: g4 };
-    graficos = Object.assign({}, graficos, novo);
+  const cot = {};
+  let semCotacao = 0;
+  await emLotes(tickers, 6, async (s) => {
+    try {
+      cot[s] = await yahooCotacao(s + '.SA');
+    } catch (e) {
+      semCotacao++;
+    }
+  });
+  if (semCotacao) avisos.push(semCotacao + ' acao(oes) sem cotacao no Yahoo');
+  const tape = tickers.filter((s) => cot[s]).map((s) => ({ s, p: cot[s].atual, v: cot[s].varPct }));
+
+  let altas = [];
+  let baixas = [];
+  if (listaTodas.length) {
+    const ord = listaTodas.slice().sort((a, b) => b.change - a.change);
+    const topo = ord.slice(0, 5);
+    const fundo = ord.slice(-5).reverse();
+    const faltam = topo.concat(fundo).map((x) => x.stock).filter((s) => !cot[s]);
+    await emLotes(faltam, 5, async (s) => {
+      try {
+        cot[s] = await yahooCotacao(s + '.SA');
+      } catch (e) {
+        avisos.push('cotacao ' + s + ': ' + e.message);
+      }
+    });
+    const monta = (x) =>
+      cot[x.stock]
+        ? pick(x.stock, cot[x.stock])
+        : { nome: x.stock, min: null, max: null, atual: num(x.close), var: null, varPct: num(x.change) };
+    altas = topo.map(monta).sort((a, b) => (b.varPct ?? -1e9) - (a.varPct ?? -1e9));
+    baixas = fundo.map(monta).sort((a, b) => (a.varPct ?? 1e9) - (b.varPct ?? 1e9));
+  } else {
+    const linhasIbov = tickers.filter((s) => cot[s] && cot[s].varPct !== null).map((s) => pick(s, cot[s]));
+    linhasIbov.sort((a, b) => b.varPct - a.varPct);
+    altas = linhasIbov.slice(0, 5);
+    baixas = linhasIbov.slice(-5).reverse();
+    avisos.push('altas e baixas: calculadas so entre acoes do Ibovespa (lista da B3 indisponivel)');
+  }
+
+  const tabela2 = await tabelaYahoo(INTL, 'indice');
+  const tabela3 = await tabelaYahoo(MOEDAS, 'moeda');
+
+  let graficos = (anterior && anterior.graficosVersao === 2 && anterior.graficos) || {};
+  const naHora = agora.getUTCMinutes() < 10;
+  for (const [chave, nome, simbolo] of GRAFICOS) {
+    if (naHora || !graficos[chave]) {
+      const pontos = await seguro('grafico ' + nome, () => graficoYahoo(simbolo), null);
+      if (pontos && pontos.length > 1) graficos[chave] = { nome, pontos };
+    }
   }
 
   const dados = {
     atualizadoEm: agora.toISOString(),
-    tabela1: { indices, altas: ext.altas, baixas: ext.baixas },
+    graficosVersao: 2,
+    tabela1: { indices, altas, baixas },
     tabela2,
     tabela3,
     tape,
@@ -306,7 +312,7 @@ async function principal() {
     return;
   }
   fs.writeFileSync('data.json', JSON.stringify(dados));
-  console.log('OK. Avisos:', avisos.length);
+  console.log('OK. Avisos:', avisos.length, '| acoes na faixa:', tape.length);
   avisos.forEach((a) => console.log(' -', a));
 }
 
