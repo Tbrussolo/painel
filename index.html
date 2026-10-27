@@ -58,6 +58,7 @@ tr.sub td{background:#182330;color:#9fb3c8;font-weight:bold;text-align:left}
   var DATA_URL = 'https://raw.githubusercontent.com/Tbrussolo/painel/dados/data.json';
   var SEQ = ['ibov', 'sp', 'nasdaq', 'usd'];
   var dados = null, idx = 0, gAtual = null;
+  var TESTE = /[?&]teste/.test(window.location.search);
 
   function $(i) { return document.getElementById(i); }
   function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
@@ -177,14 +178,14 @@ tr.sub td{background:#182330;color:#9fb3c8;font-weight:bold;text-align:left}
     $('gtit').innerHTML = esc(g.nome) + ' · semana <span class="' + cls(pct) + '">' + sinal(pct, 2) + '%</span>';
     $('grafico').style.display = 'block';
     desenhar();
-    setTimeout(function () { $('grafico').style.display = 'none'; gAtual = null; }, 30000);
+    setTimeout(function () { $('grafico').style.display = 'none'; gAtual = null; }, TESTE ? 10000 : 30000);
   }
 
   window.onresize = function () { escala(); desenhar(); };
   escala();
   carregar();
   setInterval(carregar, 60000);
-  setInterval(mostrarGrafico, 300000);
+  setInterval(mostrarGrafico, TESTE ? 20000 : 300000);
 })();
 </script>
 </body>
