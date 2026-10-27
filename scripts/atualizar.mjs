@@ -248,22 +248,19 @@ async function principal() {
   let baixas = [];
   if (listaTodas.length) {
     const ord = listaTodas.slice().sort((a, b) => b.change - a.change);
-    const topo = ord.slice(0, 5);
-    const fundo = ord.slice(-5).reverse();
+    const topo = ord.slice(0, 30);
+    const fundo = ord.slice(-30).reverse();
     const faltam = topo.concat(fundo).map((x) => x.stock).filter((s) => !cot[s]);
-    await emLotes(faltam, 5, async (s) => {
+    await emLotes(faltam, 6, async (s) => {
       try {
         cot[s] = await yahooCotacao(s + '.SA');
       } catch (e) {
-        avisos.push('cotacao ' + s + ': ' + e.message);
+        /* sem cotacao no Yahoo, fica de fora */
       }
     });
-    const monta = (x) =>
-      cot[x.stock]
-        ? pick(x.stock, cot[x.stock])
-        : { nome: x.stock, min: null, max: null, atual: num(x.close), var: null, varPct: num(x.change) };
-    altas = topo.map(monta).sort((a, b) => (b.varPct ?? -1e9) - (a.varPct ?? -1e9));
-    baixas = fundo.map(monta).sort((a, b) => (a.varPct ?? 1e9) - (b.varPct ?? 1e9));
+    const monta = (x) => (cot[x.stock] && cot[x.stock].varPct !== null ? pick(x.stock, cot[x.stock]) : null);
+    altas = topo.map(monta).filter(Boolean).sort((a, b) => b.varPct - a.varPct).slice(0, 5);
+    baixas = fundo.map(monta).filter(Boolean).sort((a, b) => a.varPct - b.varPct).slice(0, 5);
   } else {
     const linhasIbov = tickers.filter((s) => cot[s] && cot[s].varPct !== null).map((s) => pick(s, cot[s]));
     linhasIbov.sort((a, b) => b.varPct - a.varPct);
