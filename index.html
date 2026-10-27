@@ -1,27 +1,177 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-  <meta charset="utf-8">
-  <title>Teste TV</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>body{margin:0;background:#111;color:#fff;font-family:sans-serif}</style>
+<meta charset="utf-8">
+<title>Painel de mercado</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:#0b0f14;color:#e8edf2;font-family:Arial,Helvetica,sans-serif;overflow:hidden}
+body{position:relative}
+#app{height:100%;display:flex;flex-direction:column;padding:1vh 1vw}
+#tape{flex:none;height:6vh;overflow:hidden;background:#121a23;border-radius:6px}
+#fita{display:inline-block;white-space:nowrap;padding-left:100%;line-height:6vh;font-size:2.6vh;-webkit-animation:rola 200s linear infinite;animation:rola 200s linear infinite}
+@-webkit-keyframes rola{from{-webkit-transform:translateX(0)}to{-webkit-transform:translateX(-100%)}}
+@keyframes rola{from{transform:translateX(0)}to{transform:translateX(-100%)}}
+.it{margin-right:3vw}
+.pos{color:#2ecc71}
+.neg{color:#ff5a5f}
+#main{flex:1;min-height:0;display:flex;margin-top:1vh}
+.col{flex:1;display:flex;flex-direction:column;min-width:0;margin-right:1vw}
+.col:last-child{margin-right:0}
+.box{background:#121a23;border-radius:8px;padding:1vh .8vw;margin-bottom:1vh;min-height:0}
+.col .box:last-child{margin-bottom:0}
+.box h2{margin:0 0 .6vh;font-size:2.2vh;font-weight:bold;color:#9fb3c8}
+table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:2.1vh}
+th{color:#7f93a8;font-weight:normal;text-align:right;padding:.4vh .3vw;border-bottom:1px solid #243242}
+td{text-align:right;padding:.55vh .3vw;border-bottom:1px solid #1b2733;white-space:nowrap}
+th:first-child,td:first-child{text-align:left;width:27%}
+td.nome{color:#fff}
+td.atual{font-weight:bold;color:#fff}
+td.erro{color:#7f93a8;text-align:left}
+tr.sub td{background:#182330;color:#9fb3c8;font-weight:bold;text-align:left}
+#rodape{flex:none;height:3vh;line-height:3vh;font-size:1.7vh;color:#7f93a8;display:flex;justify-content:space-between;margin-top:.5vh}
+#grafico{display:none;position:absolute;left:0;top:0;width:100%;height:100%;background:#0b0f14}
+#gtit{position:absolute;left:3vw;top:2vh;font-size:5vh;font-weight:bold}
+#gbox{position:absolute;left:3vw;right:3vw;top:12vh;bottom:3vh}
+#cv{display:block;width:100%;height:100%}
+</style>
 </head>
 <body>
-  <h1 style="text-align:center">Teste painel</h1>
-  <div class="tradingview-widget-container">
-    <div class="tradingview-widget-container__widget"></div>
-    <script src="https://s3.tradingview.com/external-embedding/embed-widget-ticker-tape.js" async>
-    {
-      "symbols": [
-        {"proName": "BMFBOVESPA:IBOV", "title": "Ibovespa"},
-        {"proName": "FX_IDC:USDBRL", "title": "Dólar"},
-        {"proName": "FOREXCOM:SPXUSD", "title": "S&P 500"}
-      ],
-      "colorTheme": "dark",
-      "displayMode": "adaptive",
-      "locale": "br"
-    }
-    </script>
+<div id="app">
+  <div id="tape"><span id="fita"></span></div>
+  <div id="main">
+    <div class="col">
+      <div class="box"><h2>B3</h2><table><tbody id="t1"></tbody></table></div>
+    </div>
+    <div class="col">
+      <div class="box"><h2>Índices internacionais</h2><table><tbody id="t2"></tbody></table></div>
+      <div class="box"><h2>Moedas em R$</h2><table><tbody id="t3"></tbody></table></div>
+    </div>
   </div>
+  <div id="rodape"><span id="st">Carregando…</span><span id="av"></span></div>
+</div>
+<div id="grafico"><div id="gtit"></div><div id="gbox"><canvas id="cv"></canvas></div></div>
+<script>
+(function () {
+  var DATA_URL = 'https://raw.githubusercontent.com/Tbrussolo/painel/dados/data.json';
+  var SEQ = ['ibov', 'sp', 'nasdaq', 'usd'];
+  var dados = null, idx = 0, gAtual = null;
+
+  function $(i) { return document.getElementById(i); }
+  function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+  function ok(n) { return n !== null && n !== undefined && !isNaN(n); }
+  function fmt(n, c) {
+    if (!ok(n)) return '—';
+    var s = Math.abs(n).toFixed(c).split('.');
+    s[0] = s[0].replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+    return (n < 0 ? '-' : '') + s.join(',');
+  }
+  function sinal(n, c) { if (!ok(n)) return '—'; return (n > 0 ? '+' : '') + fmt(n, c); }
+  function cls(n) { return ok(n) ? (n > 0 ? 'pos' : (n < 0 ? 'neg' : '')) : ''; }
+
+  function linha(r, c) {
+    if (r.erro) return '<tr><td class="nome">' + esc(r.nome) + '</td><td colspan="5" class="erro">indisponível</td></tr>';
+    return '<tr><td class="nome">' + esc(r.nome) + '</td><td>' + fmt(r.min, c) + '</td><td>' + fmt(r.max, c) +
+      '</td><td class="atual">' + fmt(r.atual, c) + '</td><td class="' + cls(r['var']) + '">' + sinal(r['var'], c) +
+      '</td><td class="' + cls(r.varPct) + '">' + (ok(r.varPct) ? sinal(r.varPct, 2) + '%' : '—') + '</td></tr>';
+  }
+  var CAB = '<tr><th>Nome</th><th>Mín</th><th>Máx</th><th>Atual</th><th>Var.</th><th>Var. %</th></tr>';
+  function sub(t) { return '<tr class="sub"><td colspan="6">' + t + '</td></tr>'; }
+  function linhas(arr, c) { var h = '', i; for (i = 0; i < (arr || []).length; i++) h += linha(arr[i], c); return h; }
+
+  function render() {
+    var d = dados, t1 = d.tabela1 || {};
+    $('t1').innerHTML = CAB + linhas(t1.indices, 2) + sub('5 maiores altas') + linhas(t1.altas, 2) +
+      sub('5 maiores baixas') + linhas(t1.baixas, 2);
+    $('t2').innerHTML = CAB + linhas(d.tabela2, 2);
+    $('t3').innerHTML = CAB + linhas(d.tabela3, 4);
+
+    var tp = d.tape || [], h = '', i, x;
+    if (!tp.length) {
+      h = '<span class="it">Faixa do Ibovespa: lista de ações ainda não informada.</span>';
+    } else {
+      for (i = 0; i < tp.length; i++) {
+        x = tp[i];
+        h += '<span class="it">' + esc(x.s) + ' <b>' + fmt(x.p, 2) + '</b> <span class="' + cls(x.v) + '">' +
+          (ok(x.v) ? sinal(x.v, 2) + '%' : '—') + '</span></span>';
+      }
+    }
+    $('fita').innerHTML = h;
+    var seg = Math.max(60, tp.length * 4) + 's';
+    $('fita').style.animationDuration = seg;
+    $('fita').style.webkitAnimationDuration = seg;
+
+    var dt = new Date(d.atualizadoEm);
+    $('st').innerHTML = 'Dados de ' + pad2(dt.getDate()) + '/' + pad2(dt.getMonth() + 1) + ' ' + pad2(dt.getHours()) + ':' + pad2(dt.getMinutes());
+    var av = d.avisos || [];
+    $('av').innerHTML = av.length ? av.length + ' aviso(s): ' + esc(String(av[0]).slice(0, 110)) : '';
+  }
+
+  function carregar() {
+    var x = new XMLHttpRequest();
+    x.open('GET', DATA_URL + '?t=' + new Date().getTime(), true);
+    x.onreadystatechange = function () {
+      if (x.readyState !== 4) return;
+      if (x.status === 200) {
+        try { dados = JSON.parse(x.responseText); render(); } catch (e) { $('st').innerHTML = 'Dados inválidos'; }
+      } else {
+        $('st').innerHTML = 'Sem conexão com os dados';
+      }
+    };
+    x.send();
+  }
+
+  function desenhar() {
+    if (!gAtual) return;
+    var cv = $('cv'), box = $('gbox');
+    cv.width = box.clientWidth; cv.height = box.clientHeight;
+    var W = cv.width, H = cv.height, ctx = cv.getContext('2d'), p = gAtual.pontos;
+    var ml = W * 0.08, mr = W * 0.02, mt = H * 0.04, mb = H * 0.1, i, v, y, j, dt;
+    var min = Infinity, max = -Infinity;
+    for (i = 0; i < p.length; i++) { if (p[i][1] < min) min = p[i][1]; if (p[i][1] > max) max = p[i][1]; }
+    var folga = (max - min) * 0.08 || 1; min -= folga; max += folga;
+    function X(k) { return ml + (W - ml - mr) * k / (p.length - 1); }
+    function Y(val) { return mt + (H - mt - mb) * (1 - (val - min) / (max - min)); }
+    ctx.clearRect(0, 0, W, H);
+    ctx.font = Math.round(H * 0.04) + 'px Arial';
+    ctx.fillStyle = '#7f93a8'; ctx.strokeStyle = '#243242'; ctx.lineWidth = 1;
+    ctx.textAlign = 'right';
+    for (i = 0; i <= 4; i++) {
+      v = min + (max - min) * i / 4; y = Y(v);
+      ctx.beginPath(); ctx.moveTo(ml, y); ctx.lineTo(W - mr, y); ctx.stroke();
+      ctx.fillText(fmt(v, 2), ml - 8, y + H * 0.015);
+    }
+    ctx.textAlign = 'center';
+    for (i = 0; i < 5; i++) {
+      j = Math.round((p.length - 1) * i / 4); dt = new Date(p[j][0]);
+      ctx.fillText(pad2(dt.getDate()) + '/' + pad2(dt.getMonth() + 1), X(j), H - mb * 0.25);
+    }
+    ctx.strokeStyle = p[p.length - 1][1] >= p[0][1] ? '#2ecc71' : '#ff5a5f';
+    ctx.lineWidth = Math.max(3, H * 0.006);
+    ctx.beginPath();
+    for (i = 0; i < p.length; i++) { if (i === 0) ctx.moveTo(X(i), Y(p[i][1])); else ctx.lineTo(X(i), Y(p[i][1])); }
+    ctx.stroke();
+  }
+
+  function mostrarGrafico() {
+    var k = SEQ[idx % SEQ.length]; idx++;
+    var g = dados && dados.graficos && dados.graficos[k];
+    if (!g || !g.pontos || g.pontos.length < 2) return;
+    var a = g.pontos[0][1], b = g.pontos[g.pontos.length - 1][1], pct = (b - a) / a * 100;
+    gAtual = g;
+    $('gtit').innerHTML = esc(g.nome) + ' · semana <span class="' + cls(pct) + '">' + sinal(pct, 2) + '%</span>';
+    $('grafico').style.display = 'block';
+    desenhar();
+    setTimeout(function () { $('grafico').style.display = 'none'; gAtual = null; }, 30000);
+  }
+
+  window.onresize = desenhar;
+  carregar();
+  setInterval(carregar, 60000);
+  setInterval(mostrarGrafico, 300000);
+})();
+</script>
 </body>
 </html>
